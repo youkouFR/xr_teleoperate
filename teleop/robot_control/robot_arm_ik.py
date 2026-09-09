@@ -15,6 +15,295 @@ sys.path.append(parent2_dir)
 
 from teleop.utils.weighted_moving_filter import WeightedMovingFilter
 
+class G2_ArmIK:
+    def __init__(self, Unit_Test = False, Visualization = False):
+        np.set_printoptions(precision=5, suppress=True, linewidth=200)
+
+        self.Unit_Test = Unit_Test
+        self.Visualization = Visualization
+
+        # fixed cache file path
+        self.cache_path = "g2_model_cache.pkl"
+
+        # G2 用绝对路径 + package_dir，Unit_Test 不再区分路径
+        self.urdf_path = '/opt/workspace/G2_Robot/genie_robot_description/urdf/G2_t2_crsB/G2_t2_crsB_o10_t2.urdf'
+        self.model_dir = '/opt/workspace/G2_Robot'
+        # if not self.Unit_Test:
+        #     self.urdf_path = '../assets/g1/g1_body29_hand14.urdf'
+        #     self.model_dir = '../assets/g1/'
+        # else:
+        #     self.urdf_path = '../../assets/g1/g1_body29_hand14.urdf'
+        #     self.model_dir = '../../assets/g1/'
+
+        # Try loading cache first
+        if os.path.exists(self.cache_path) and (not self.Visualization):
+            logger_mp.info(f"[G1_29_ArmIK] >>> Loading cached robot model: {self.cache_path}")
+            self.robot, self.reduced_robot = self.load_cache()
+        else:
+            logger_mp.info("[G1_29_ArmIK] >>> Loading URDF (slow)...")
+            self.robot = pin.RobotWrapper.BuildFromURDF(self.urdf_path, self.model_dir)
+
+            self.mixed_jointsToLockIDs = [
+                # body 5
+                "idx01_body_joint1","idx02_body_joint2","idx03_body_joint3","idx04_body_joint4","idx05_body_joint5",
+                # head 3
+                "idx11_head_joint1","idx12_head_joint2","idx13_head_joint3",
+                # chassis 8
+                "idx111_chassis_lwheel_front_joint1","idx112_chassis_lwheel_front_joint2",
+                "idx131_chassis_rwheel_front_joint1","idx132_chassis_rwheel_front_joint2",
+                "idx141_chassis_rwheel_rear_joint1","idx142_chassis_rwheel_rear_joint2",
+                "idx121_chassis_lwheel_rear_joint1","idx122_chassis_lwheel_rear_joint2",
+                # left O10 hand 16 (含 5 mimic；middle_abad 是 fixed 不列)
+                "idx31_hand_l_thumb_roll_joint","idx32_hand_l_thumb_abad_joint","idx33_hand_l_thumb_mcp_joint",
+                "idx34_hand_l_thumb_pip_joint","idx35_hand_l_thumb_dip_joint",
+                "idx36_hand_l_index_abad_joint","idx37_hand_l_index_pip_joint","idx38_hand_l_index_dip_joint",
+                "idx39_hand_l_middle_pip_joint","idx40_hand_l_middle_dip_joint",
+                "idx41_hand_l_ring_abad_joint","idx42_hand_l_ring_pip_joint","idx43_hand_l_ring_dip_joint",
+                "idx44_hand_l_pinky_abad_joint","idx45_hand_l_pinky_pip_joint","idx46_hand_l_pinky_dip_joint",
+                # right O10 hand 16
+                "idx71_hand_r_thumb_roll_joint","idx72_hand_r_thumb_abad_joint","idx73_hand_r_thumb_mcp_joint",
+                "idx74_hand_r_thumb_pip_joint","idx75_hand_r_thumb_dip_joint",
+                "idx76_hand_r_index_abad_joint","idx77_hand_r_index_pip_joint","idx78_hand_r_index_dip_joint",
+                "idx79_hand_r_middle_pip_joint","idx80_hand_r_middle_dip_joint",
+                "idx81_hand_r_ring_abad_joint","idx82_hand_r_ring_pip_joint","idx83_hand_r_ring_dip_joint",
+                "idx84_hand_r_pinky_abad_joint","idx85_hand_r_pinky_pip_joint","idx86_hand_r_pinky_dip_joint",
+            ]
+            self.reduced_robot = self.robot.buildReducedRobot(
+                list_of_joints_to_lock=self.mixed_jointsToLockIDs,
+                reference_configuration=np.array([0.0] * self.robot.model.nq),
+            )
+
+            # EE 帧挂在 G2 手臂末端关节 idx27/67_arm_*_joint7（不是 G1 的 wrist_yaw）；offset=crsB 实测掌心初值
+            self.reduced_robot.model.addFrame(
+                pin.Frame('L_ee',
+                          self.reduced_robot.model.getJointId('idx27_arm_l_joint7'),
+                          pin.SE3(np.eye(3),
+                                  np.array([0.09,0,0.018]).T),
+                          pin.FrameType.OP_FRAME)
+            )
+            self.reduced_robot.model.addFrame(
+                pin.Frame('R_ee',
+                          self.reduced_robot.model.getJointId('idx67_arm_r_joint7'),
+                          pin.SE3(np.eye(3),
+                                  np.array([0.09,0,0.018]).T),
+                          pin.FrameType.OP_FRAME)
+            )
+            # Save cache (only after everything is built)
+            if not os.path.exists(self.cache_path):
+                self.save_cache()
+                logger_mp.info(f">>> Cache saved to {self.cache_path}")
+
+        # for i in range(self.reduced_robot.model.nframes):
+        #     frame = self.reduced_robot.model.frames[i]
+        #     frame_id = self.reduced_robot.model.getFrameId(frame.name)
+        #     logger_mp.debug(f"Frame ID: {frame_id}, Name: {frame.name}")
+
+        # Creating Casadi models and data for symbolic computing
+        self.cmodel = cpin.Model(self.reduced_robot.model)
+        self.cdata = self.cmodel.createData()
+
+        # Creating symbolic variables
+        self.cq = casadi.SX.sym("q", self.reduced_robot.model.nq, 1) 
+        self.cTf_l = casadi.SX.sym("tf_l", 4, 4)
+        self.cTf_r = casadi.SX.sym("tf_r", 4, 4)
+        cpin.framesForwardKinematics(self.cmodel, self.cdata, self.cq)
+
+        # Get the hand joint ID and define the error function
+        self.L_hand_id = self.reduced_robot.model.getFrameId("L_ee")
+        self.R_hand_id = self.reduced_robot.model.getFrameId("R_ee")
+
+        self.translational_error = casadi.Function(
+            "translational_error",
+            [self.cq, self.cTf_l, self.cTf_r],
+            [
+                casadi.vertcat(
+                    self.cdata.oMf[self.L_hand_id].translation - self.cTf_l[:3,3],
+                    self.cdata.oMf[self.R_hand_id].translation - self.cTf_r[:3,3]
+                )
+            ],
+        )
+        self.rotational_error = casadi.Function(
+            "rotational_error",
+            [self.cq, self.cTf_l, self.cTf_r],
+            [
+                casadi.vertcat(
+                    cpin.log3(self.cdata.oMf[self.L_hand_id].rotation @ self.cTf_l[:3,:3].T),
+                    cpin.log3(self.cdata.oMf[self.R_hand_id].rotation @ self.cTf_r[:3,:3].T)
+                )
+            ],
+        )
+
+        # Defining the optimization problem
+        self.opti = casadi.Opti()
+        self.var_q = self.opti.variable(self.reduced_robot.model.nq)
+        self.var_q_last = self.opti.parameter(self.reduced_robot.model.nq)   # for smooth
+        self.param_tf_l = self.opti.parameter(4, 4)
+        self.param_tf_r = self.opti.parameter(4, 4)
+        self.translational_cost = casadi.sumsqr(self.translational_error(self.var_q, self.param_tf_l, self.param_tf_r))
+        self.rotation_cost = casadi.sumsqr(self.rotational_error(self.var_q, self.param_tf_l, self.param_tf_r))
+        self.regularization_cost = casadi.sumsqr(self.var_q)
+        self.smooth_cost = casadi.sumsqr(self.var_q - self.var_q_last)
+
+        # Setting optimization constraints and goals
+        self.opti.subject_to(self.opti.bounded(
+            self.reduced_robot.model.lowerPositionLimit,
+            self.var_q,
+            self.reduced_robot.model.upperPositionLimit)
+        )
+        self.opti.minimize(50 * self.translational_cost + self.rotation_cost + 0.02 * self.regularization_cost + 0.1 * self.smooth_cost)
+
+        opts = {
+            # CasADi-level options
+            'expand': True, 
+            'detect_simple_bounds': True,
+            'calc_lam_p': False,  # https://github.com/casadi/casadi/wiki/FAQ:-Why-am-I-getting-%22NaN-detected%22in-my-optimization%3F
+            'print_time':False,   # print or not
+            # IPOPT solver options
+            'ipopt.sb': 'yes',    # disable Ipopt's license message
+            'ipopt.print_level': 0,
+            'ipopt.max_iter': 30, 
+            'ipopt.tol': 1e-4,
+            'ipopt.acceptable_tol': 5e-4,
+            'ipopt.acceptable_iter': 5,
+            'ipopt.warm_start_init_point': 'yes',
+            'ipopt.derivative_test': 'none',
+            'ipopt.jacobian_approximation': 'exact',
+            # 'ipopt.hessian_approximation': 'limited-memory',
+        }
+        self.opti.solver("ipopt", opts)
+
+        self.init_data = np.zeros(self.reduced_robot.model.nq)
+        self.smooth_filter = WeightedMovingFilter(np.array([0.4, 0.3, 0.2, 0.1]), 14)
+        self.vis = None
+
+        if self.Visualization:
+            # Initialize the Meshcat visualizer for visualization
+            self.vis = MeshcatVisualizer(self.reduced_robot.model, self.reduced_robot.collision_model, self.reduced_robot.visual_model)
+            self.vis.initViewer(open=True) 
+            self.vis.loadViewerModel("pinocchio") 
+            self.vis.displayFrames(True, frame_ids=[self.L_hand_id, self.R_hand_id], axis_length = 0.15, axis_width = 5)
+            self.vis.display(pin.neutral(self.reduced_robot.model))
+
+            # Enable the display of end effector target frames with short axis lengths and greater width.
+            frame_viz_names = ['L_ee_target', 'R_ee_target']
+            FRAME_AXIS_POSITIONS = (
+                np.array([[0, 0, 0], [1, 0, 0],
+                          [0, 0, 0], [0, 1, 0],
+                          [0, 0, 0], [0, 0, 1]]).astype(np.float32).T
+            )
+            FRAME_AXIS_COLORS = (
+                np.array([[1, 0, 0], [1, 0.6, 0],
+                          [0, 1, 0], [0.6, 1, 0],
+                          [0, 0, 1], [0, 0.6, 1]]).astype(np.float32).T
+            )
+            axis_length = 0.1
+            axis_width = 20
+            for frame_viz_name in frame_viz_names:
+                self.vis.viewer[frame_viz_name].set_object(
+                    mg.LineSegments(
+                        mg.PointsGeometry(
+                            position=axis_length * FRAME_AXIS_POSITIONS,
+                            color=FRAME_AXIS_COLORS,
+                        ),
+                        mg.LineBasicMaterial(
+                            linewidth=axis_width,
+                            vertexColors=True,
+                        ),
+                    )
+                )
+
+    # Save both robot.model and reduced_robot.model
+    def save_cache(self):
+        data = {
+            "robot_model": self.robot.model,
+            "reduced_model": self.reduced_robot.model,
+        }
+
+        with open(self.cache_path, "wb") as f:
+            pickle.dump(data, f)
+
+    # Load both robot.model and reduced_robot.model
+    def load_cache(self):
+        with open(self.cache_path, "rb") as f:
+            data = pickle.load(f)
+
+        robot = pin.RobotWrapper()
+        robot.model = data["robot_model"]
+        robot.data = robot.model.createData()
+
+        reduced_robot = pin.RobotWrapper()
+        reduced_robot.model = data["reduced_model"]
+        reduced_robot.data = reduced_robot.model.createData()
+
+        return robot, reduced_robot
+
+    def scale_arms(self, human_left_pose, human_right_pose, human_arm_length=0.60, robot_arm_length=0.75):
+        scale_factor = robot_arm_length / human_arm_length
+        robot_left_pose = human_left_pose.copy()
+        robot_right_pose = human_right_pose.copy()
+        robot_left_pose[:3, 3] *= scale_factor
+        robot_right_pose[:3, 3] *= scale_factor
+        return robot_left_pose, robot_right_pose
+
+    def solve_ik(self, left_wrist, right_wrist, current_lr_arm_motor_q = None, current_lr_arm_motor_dq = None):
+        if current_lr_arm_motor_q is not None:
+            self.init_data = current_lr_arm_motor_q
+        self.opti.set_initial(self.var_q, self.init_data)
+
+        # left_wrist, right_wrist = self.scale_arms(left_wrist, right_wrist)
+        if self.Visualization:
+            self.vis.viewer['L_ee_target'].set_transform(left_wrist)   # for visualization
+            self.vis.viewer['R_ee_target'].set_transform(right_wrist)  # for visualization
+
+        self.opti.set_value(self.param_tf_l, left_wrist)
+        self.opti.set_value(self.param_tf_r, right_wrist)
+        self.opti.set_value(self.var_q_last, self.init_data) # for smooth
+
+        try:
+            sol = self.opti.solve()
+            # sol = self.opti.solve_limited()
+
+            sol_q = self.opti.value(self.var_q)
+            self.smooth_filter.add_data(sol_q)
+            sol_q = self.smooth_filter.filtered_data
+
+            if current_lr_arm_motor_dq is not None:
+                v = current_lr_arm_motor_dq * 0.0
+            else:
+                v = (sol_q - self.init_data) * 0.0
+
+            self.init_data = sol_q
+
+            sol_tauff = pin.rnea(self.reduced_robot.model, self.reduced_robot.data, sol_q, v, np.zeros(self.reduced_robot.model.nv))
+
+            if self.Visualization:
+                self.vis.display(sol_q)  # for visualization
+
+            return sol_q, sol_tauff
+        
+        except Exception as e:
+            logger_mp.error(f"ERROR in convergence, plotting debug info.{e}")
+
+            sol_q = self.opti.debug.value(self.var_q)
+            self.smooth_filter.add_data(sol_q)
+            sol_q = self.smooth_filter.filtered_data
+
+            if current_lr_arm_motor_dq is not None:
+                v = current_lr_arm_motor_dq * 0.0
+            else:
+                v = (sol_q - self.init_data) * 0.0
+
+            self.init_data = sol_q
+
+            sol_tauff = pin.rnea(self.reduced_robot.model, self.reduced_robot.data, sol_q, v, np.zeros(self.reduced_robot.model.nv))
+
+            logger_mp.error(f"sol_q:{sol_q} \nmotorstate: \n{current_lr_arm_motor_q} \nleft_pose: \n{left_wrist} \nright_pose: \n{right_wrist}")
+            if self.Visualization:
+                self.vis.display(sol_q)  # for visualization
+
+            # return sol_q, sol_tauff
+            return current_lr_arm_motor_q, np.zeros(self.reduced_robot.model.nv)
+
 class G1_29_ArmIK:
     def __init__(self, Unit_Test = False, Visualization = False):
         np.set_printoptions(precision=5, suppress=True, linewidth=200)
@@ -80,19 +369,12 @@ class G1_29_ArmIK:
             )
 
             self.reduced_robot.model.addFrame(
-                pin.Frame('L_ee',
-                          self.reduced_robot.model.getJointId('left_wrist_yaw_joint'),
-                          pin.SE3(np.eye(3),
-                                  np.array([0.05,0,0]).T),
-                          pin.FrameType.OP_FRAME)
-            )
+                pin.Frame('L_ee', self.reduced_robot.model.getJointId('idx27_arm_l_joint7'),
+                          pin.SE3(np.eye(3), np.array([0.05, 0, 0]).T), pin.FrameType.OP_FRAME))
             self.reduced_robot.model.addFrame(
-                pin.Frame('R_ee',
-                          self.reduced_robot.model.getJointId('right_wrist_yaw_joint'),
-                          pin.SE3(np.eye(3),
-                                  np.array([0.05,0,0]).T),
-                          pin.FrameType.OP_FRAME)
-            )
+                pin.Frame('R_ee', self.reduced_robot.model.getJointId('idx67_arm_r_joint7'),
+                          pin.SE3(np.eye(3), np.array([0.05, 0, 0]).T), pin.FrameType.OP_FRAME))
+
             # Save cache (only after everything is built)
             if not os.path.exists(self.cache_path):
                 self.save_cache()
@@ -2020,17 +2302,17 @@ if __name__ == "__main__":
     # arm_ik = H1_ArmIK(Unit_Test = True, Visualization = True)
     # arm_ik = H2_ArmIK(Unit_Test = True, Visualization = True)
     # arm_ik = R1_A5_ArmIK(Unit_Test = True, Visualization = True)
-    arm_ik = R1_A7_ArmIK(Unit_Test = True, Visualization = True)
-
+    # arm_ik = R1_A7_ArmIK(Unit_Test = True, Visualization = True)
+    arm_ik = G2_ArmIK(Unit_Test=False, Visualization=True)
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, +0.25, 0.1]),
+        np.array([0.25, +0.25, 1.2]),
     )
 
     R_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, -0.25, 0.1]),
+        np.array([0.25, -0.25, 1.0]),
     )
 
     rotation_speed = 0.005

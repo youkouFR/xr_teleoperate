@@ -9,8 +9,8 @@
 | 阶段 | 目标 | 状态 |
 |---|---|---|
 | Phase 0 | 前置准备：磁盘扩容（DATA 盘）、机器/环境勘察 | ✅ 完成 |
-| **Phase 1** | **Quest3 → Unitree G1(29DoF)+Dex3 → Isaac Sim（跑通完整链路）** | 🔵 进行中 |
-| Phase 2 | 迁移到 智元 G2 + O10 灵巧手（换 IK 类 / 手臂控制器 / 手部重定向 / 对接 GDK 协议） | ⬜ 未开始 |
+| **Phase 1** | **Quest3 → Unitree G1(29DoF)+Dex3 → Isaac Sim（跑通完整链路）** | ✅ 完成 |
+| **Phase 2** | 迁移到 智元 G2 + O10 灵巧手（换 IK 类 / 手臂控制器 / 手部重定向 / 对接 GDK 或 DDS 桥） | 🔵 进行中（Block1+3 手顺已出） |
 
 > **为什么先做 Phase 1**：G1+Dex3 是 `xr_teleoperate` + `unitree_sim_isaaclab` 的官方原生组合，几乎零代码改动即可验证「Quest3 → IK → DDS → Isaac Sim → 灵巧手」这条完整链路。链路一旦跑通，Phase 2 换 G2 就只是「替换末端机器人/手模型 + 对接智元 GDK 协议」，风险和工作量都大幅降低。
 
@@ -18,7 +18,9 @@
 
 ## 文档清单
 
-- 📘 [Phase1_Quest3_to_IsaacSim_G1Dex3.md](./Phase1_Quest3_to_IsaacSim_G1Dex3.md) — **Phase 1 详细手顺（当前执行这份）**
+- 📗 [Phase1_Quest3_to_IsaacSim_G1Dex3.md](./Phase1_Quest3_to_IsaacSim_G1Dex3.md) — **Phase 1 详细手顺（已跑通 ✅）**
+- 📘 [Phase2_Quest3_to_G2_O10_Plan.md](./Phase2_Quest3_to_G2_O10_Plan.md) — **Phase 2 规划与工作量评估（决策已定：无真机/仿真 · Isaac Sim · 先 Block1+3）**
+- 📘 [Phase2_Block1_3_G2IK_O10Retarget.md](./Phase2_Block1_3_G2IK_O10Retarget.md) — **Phase 2 · Block1+3 执行手顺（当前执行这份）**
 
 ---
 
@@ -52,8 +54,8 @@
 ## 进度追踪
 
 - [x] Phase 0：DATA 盘格式化 + 开机自动挂载（`/home/amit/DATA`，ext4，435G）
-- [ ] Phase 1a：teleop 端就绪（环境 + 子模块 + 依赖 + 证书）
-- [ ] Phase 1b：sim 端就绪（仓库 + 资产 + 依赖，仿真独立拉起 G1+Dex3）
-- [ ] Phase 1c：两端 DDS 打通
-- [ ] Phase 1d：Quest3 接入，全链路遥操作 + 灵巧手
-- [ ] Phase 2：迁移 G2 + O10
+- [x] Phase 1a：teleop 端就绪（环境 + 子模块 + 依赖 + 证书）
+- [x] Phase 1b：sim 端就绪（仓库 + 资产 + 依赖，仿真独立拉起 G1+Dex3）
+- [x] Phase 1c：两端 DDS 打通
+- [x] Phase 1d：Quest3 接入，全链路遥操作 + 灵巧手 ✅
+- [ ] Phase 2：迁移 G2 + O10（🔵 Block1+3 手顺已出，待执行）
