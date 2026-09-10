@@ -1,0 +1,57 @@
+left:
+  type: vector # 可改 DexPilot
+  urdf_path: o10_hand/o10_left.urdf
+
+  # Target refers to the retargeting target, which is the robot hand
+  target_joint_names: 
+    [
+      "idx31_hand_l_thumb_roll_joint",
+      "idx32_hand_l_thumb_abad_joint",
+      "idx33_hand_l_thumb_mcp_joint",
+      "idx36_hand_l_index_abad_joint",
+      "idx37_hand_l_index_pip_joint",
+      "idx39_hand_l_middle_pip_joint",
+      "idx41_hand_l_ring_abad_joint",
+      "idx42_hand_l_ring_pip_joint",
+      "idx44_hand_l_pinky_abad_joint",
+      "idx45_hand_l_pinky_pip_joint",
+    ]
+
+  # DexPilot 字段
+  wrist_link_name: "hand_l_base_link"
+  finger_tip_link_names: ["hand_l_thumb_tip","hand_l_index_tip","hand_l_middle_tip","hand_l_ring_tip","hand_l_pinky_tip"]
+  target_link_human_indices_dexpilot: [[9,14,19,24,14,19,24,19,24,24,0,0,0,0,0],[4,4,4,4,9,9,9,14,14,19,4,9,14,19,24]]
+  # vector 字段
+  target_origin_link_names: ["hand_l_base_link","hand_l_base_link","hand_l_base_link","hand_l_base_link","hand_l_base_link"]
+  target_task_link_names: ["hand_l_thumb_tip","hand_l_index_tip","hand_l_middle_tip","hand_l_ring_tip","hand_l_pinky_tip"]
+  target_link_human_indices_vector: [[0,0,0,0,0],[4,9,14,19,24]]
+  scaling_factor: 1.0     # O10 相对人手大小，先 1.0，Step 3.4 视情况调
+  low_pass_alpha: 0.2
+  # ignore_mimic_joint 默认 False → 6 个 mimic 自动联动，勿改
+
+
+right:
+  type: vector
+  urdf_path: o10_hand/o10_right.urdf
+  target_joint_names:
+    [
+      "idx71_hand_r_thumb_roll_joint",
+      "idx72_hand_r_thumb_abad_joint",
+      "idx73_hand_r_thumb_mcp_joint",
+      "idx76_hand_r_index_abad_joint",
+      "idx77_hand_r_index_pip_joint",
+      "idx79_hand_r_middle_pip_joint",
+      "idx81_hand_r_ring_abad_joint",
+      "idx82_hand_r_ring_pip_joint",
+      "idx84_hand_r_pinky_abad_joint",
+      "idx85_hand_r_pinky_pip_joint",
+    ]
+  wrist_link_name: "hand_r_base_link"
+  finger_tip_link_names: ["hand_r_thumb_tip","hand_r_index_tip","hand_r_middle_tip","hand_r_ring_tip","hand_r_pinky_tip"]
+  target_link_human_indices_dexpilot: [[9,14,19,24,14,19,24,19,24,24,0,0,0,0,0],[4,4,4,4,9,9,9,14,14,19,4,9,14,19,24]]
+  target_origin_link_names: ["hand_r_base_link","hand_r_base_link","hand_r_base_link","hand_r_base_link","hand_r_base_link"]
+  target_task_link_names: ["hand_r_thumb_tip","hand_r_index_tip","hand_r_middle_tip","hand_r_ring_tip","hand_r_pinky_tip"]
+  target_link_human_indices_vector: [[0,0,0,0,0],[4,9,14,19,24]]
+  scaling_factor: 1.0
+  low_pass_alpha: 0.2
+

@@ -139,16 +139,24 @@ PY
             ]
 ```
 
-**③ 末端帧 `L_ee`/`R_ee`**（挂到手臂最后一个关节 `idx27/67_arm_*_joint7`，offset 初值给 crsB 实测 `[0.09, 0, 0.018]`，Step 1.4 再目视微调）：
+**③ 末端帧 `L_ee`/`R_ee`**（`addFrame` 的 parent 必须是 joint，故挂手臂最后一个关节 `idx27/67_arm_*_joint7`；但 placement **直接复用 pinocchio 已算好的手掌基座帧 `hand_*_base_link` 的精确变换**，不手工猜 offset）：
 ```python
-            # EE offset 初值 = crsB 实测 joint7→end(x=0.09)→hand_base(z=0.018)，指向掌心；Step 1.4 目视微调
+            # URDF 的 link 在 pinocchio 里本就是 BODY Frame；hand_*_base_link 的 parent_joint 就是 joint7，
+            # 其 placement 已含 joint7→手掌基座的精确平移[0.108,0,0]与手掌朝向旋转（自动合并了中间 fixed 链）。
+            _L_ee_ref = self.reduced_robot.model.frames[
+                self.reduced_robot.model.getFrameId("hand_l_base_link")].placement
+            _R_ee_ref = self.reduced_robot.model.frames[
+                self.reduced_robot.model.getFrameId("hand_r_base_link")].placement
+            # 若要把 EE 从腕基座再推到掌心/指尖，在此叠加本地位移（见 Step 1.4）：
+            #   _L_ee_ref = _L_ee_ref * pin.SE3(np.eye(3), np.array([dx, dy, dz]))
             self.reduced_robot.model.addFrame(
                 pin.Frame('L_ee', self.reduced_robot.model.getJointId('idx27_arm_l_joint7'),
-                          pin.SE3(np.eye(3), np.array([0.09, 0, 0.018]).T), pin.FrameType.OP_FRAME))
+                          _L_ee_ref, pin.FrameType.OP_FRAME))
             self.reduced_robot.model.addFrame(
                 pin.Frame('R_ee', self.reduced_robot.model.getJointId('idx67_arm_r_joint7'),
-                          pin.SE3(np.eye(3), np.array([0.09, 0, 0.018]).T), pin.FrameType.OP_FRAME))
+                          _R_ee_ref, pin.FrameType.OP_FRAME))
 ```
+> ⚠️ 别再用 `pin.SE3(np.eye(3), [0.09,0,0.018])` 这类手工 offset：① `arm_l_end_joint` 带旋转，0.018 的 z 实际被并进 x（正确平移是 **0.108**）；② 单位阵 `eye(3)` 丢掉手掌朝向，会让 IK 把 joint7 姿态而非手掌姿态对齐手腕。用 `hand_*_base_link.placement` 一步到位（实测 EE 与手掌基座世界位姿完全重合）。
 
 **④ 平滑滤波器维度**：`WeightedMovingFilter(np.array([0.4,0.3,0.2,0.1]), 14)` —— G1_29 本就是 14，**不用改**（G2 双臂也是 14）。
 
@@ -172,13 +180,16 @@ python robot_control/robot_arm_ik.py
 ```
 **验收点**：Meshcat 里出现 G2 双臂+双手模型；按 `s` 后两条末端目标坐标轴（`L_ee_target`/`R_ee_target`）做正弦运动，**双臂末端帧跟随目标**、关节不超限、无 NaN 报错。
 
-## Step 1.4 EE offset 调校（关键，决定遥操作手感）
+## Step 1.4 EE 落点微调（可选：从手掌基座推到掌心/指尖）
 
-`L_ee`/`R_ee` 是 IK 要对齐 Quest3 手腕位姿的目标帧，应落在**掌心/抓握中心**。
-- 在 Meshcat 里对比 `L_ee`（`displayFrames` 画出的帧）与手掌 mesh 的相对位置。
-- 若 `L_ee` 落在手腕而非掌心 → 调 Step 1.2③ 里的 `np.array([x, y, z])`：先只动 `x`（沿末端轴向掌心方向），量级参考 `0.05~0.12`；必要时试 `y/z` 或换轴符号。
-- **crsB 实测 EE 初值**：`arm_l_end_joint` origin x=0.09、`idx31_hand_l_hand_base_joint` origin z=0.018 → offset 初值取 `[0.09, 0, 0.018]`（joint7→掌心，已写入 Step 1.2③）；再按 Meshcat 目视微调 x（沿末端轴向掌心方向）。
-- **改完删缓存**：`rm -f teleop/g2_model_cache.pkl`（否则仍加载旧模型），重跑 Step 1.3。
+Step 1.2③ 已让 `L_ee`/`R_ee` **精确锚在手掌基座 `hand_*_base_link`**（含正确姿态），IK 会让手掌根部对齐 Quest3 手腕 —— 通常已够用。
+若想让抓握点落在**掌心或指尖**（而非腕部），不必手工猜数值，只在 Step 1.2③ 的 `_L_ee_ref` 上叠加**本地位移**：
+```python
+            _L_ee_ref = _L_ee_ref * pin.SE3(np.eye(3), np.array([dx, dy, dz]))   # 右乘 = 在 hand_base_link 自身坐标系下偏移
+```
+- `[dx,dy,dz]` 是 **hand_base_link 本地坐标系**下的偏移；哪个轴指向指尖，重跑后在 Meshcat 看 `L_ee` 帧三色轴朝向即可确定（沿该轴 +几厘米到掌心）。左右手分别调 `_L_ee_ref`/`_R_ee_ref`。
+- **改完删缓存**：`rm -f teleop/g2_model_cache.pkl`（否则加载旧模型），重跑 Step 1.3。
+- **验证**：q=0 时 `L_ee`/`R_ee` 世界坐标应与 `hand_*_base_link` 重合、左右对称（实测手掌基座 `[0.102, ±0.9615, 1.3415]`）。
 
 **Block 1 验收**：目标帧与末端帧在合理误差内重合、双臂平滑跟随、`reduced nq=14`。
 
@@ -366,8 +377,8 @@ for open_hand in (True, False):
 ```
 ```bash
 conda activate tv
-cd /opt/workspace/xr_teleoperate/teleop/robot_control
-python test_o10_retarget.py
+cd /opt/workspace/xr_teleoperate/teleop
+python ./robot_control/test_o10_retarget.py
 ```
 **验收点**：
 1. 首次加载打印蓝色提示 **“Mimic joint adaptor enabled…”** → 说明 6 个耦合关节会自动联动 ✅

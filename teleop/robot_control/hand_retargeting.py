@@ -12,6 +12,8 @@ class HandType(Enum):
     UNITREE_DEX3_Unit_Test = "../../assets/unitree_hand/unitree_dex3.yml"
     BRAINCO_HAND = "../assets/brainco_hand/brainco.yml"
     BRAINCO_HAND_Unit_Test = "../../assets/brainco_hand/brainco.yml"
+    O10 = "../assets/o10_hand/o10.yml"
+    O10_Unit_Test = "../../assets/o10_hand/o10.yml"
 
 class HandRetargeting:
     def __init__(self, hand_type: HandType):
@@ -26,6 +28,10 @@ class HandRetargeting:
         elif hand_type == HandType.BRAINCO_HAND:
             RetargetingConfig.set_default_urdf_dir('../assets')
         elif hand_type == HandType.BRAINCO_HAND_Unit_Test:
+            RetargetingConfig.set_default_urdf_dir('../../assets')
+        elif hand_type == HandType.O10:
+            RetargetingConfig.set_default_urdf_dir('../assets')
+        elif hand_type == HandType.O10_Unit_Test:
             RetargetingConfig.set_default_urdf_dir('../../assets')
 
         config_file_path = Path(hand_type.value)
@@ -75,6 +81,19 @@ class HandRetargeting:
                                                        'right_middle_proximal_joint', 'right_ring_proximal_joint', 'right_pinky_proximal_joint' ]
                 self.left_dex_retargeting_to_hardware = [ self.left_retargeting_joint_names.index(name) for name in self.left_brainco_api_joint_names]
                 self.right_dex_retargeting_to_hardware = [ self.right_retargeting_joint_names.index(name) for name in self.right_brainco_api_joint_names]
+            elif hand_type == HandType.O10 or hand_type == HandType.O10_Unit_Test:
+                self.left_o10_api_joint_names = [
+                    'idx31_hand_l_thumb_roll_joint','idx32_hand_l_thumb_abad_joint','idx33_hand_l_thumb_mcp_joint',
+                    'idx36_hand_l_index_abad_joint','idx37_hand_l_index_pip_joint','idx39_hand_l_middle_pip_joint',
+                    'idx41_hand_l_ring_abad_joint','idx42_hand_l_ring_pip_joint',
+                    'idx44_hand_l_pinky_abad_joint','idx45_hand_l_pinky_pip_joint']
+                self.right_o10_api_joint_names = [
+                    'idx71_hand_r_thumb_roll_joint','idx72_hand_r_thumb_abad_joint','idx73_hand_r_thumb_mcp_joint',
+                    'idx76_hand_r_index_abad_joint','idx77_hand_r_index_pip_joint','idx79_hand_r_middle_pip_joint',
+                    'idx81_hand_r_ring_abad_joint','idx82_hand_r_ring_pip_joint',
+                    'idx84_hand_r_pinky_abad_joint','idx85_hand_r_pinky_pip_joint']
+                self.left_dex_retargeting_to_hardware  = [self.left_retargeting_joint_names.index(n)  for n in self.left_o10_api_joint_names]
+                self.right_dex_retargeting_to_hardware = [self.right_retargeting_joint_names.index(n) for n in self.right_o10_api_joint_names]
         
         except FileNotFoundError:
             logger_mp.warning(f"Configuration file not found: {config_file_path}")

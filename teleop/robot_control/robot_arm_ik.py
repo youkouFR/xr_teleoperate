@@ -73,19 +73,27 @@ class G2_ArmIK:
                 reference_configuration=np.array([0.0] * self.robot.model.nq),
             )
 
-            # EE 帧挂在 G2 手臂末端关节 idx27/67_arm_*_joint7（不是 G1 的 wrist_yaw）；offset=crsB 实测掌心初值
+            # EE 帧：addFrame 的 parent 必须是 joint（pinocchio 只接受 JointIndex），故仍挂 joint7；
+            # 但 placement 直接复用 pinocchio 已算好的手掌基座帧 hand_*_base_link 的精确变换（URDF 的 link 本就是 model 里的 BODY Frame）。
+            # 实测 hand_l_base_link 相对 joint7 = 平移[0.108,0,0] + 手掌朝向旋转，比手工试 [0.1,0.2,0]/[0.09,0,0.018] 更准（含正确姿态）。
+            # _L_ee_ref = self.reduced_robot.model.frames[
+            #     self.reduced_robot.model.getFrameId("hand_l_base_link")].placement
+            # _R_ee_ref = self.reduced_robot.model.frames[
+            #     self.reduced_robot.model.getFrameId("hand_r_base_link")].placement
+            # 若要把 EE 从腕基座再推到掌心/指尖，在此叠加本地位移（Step 1.4 目视调）：
+            # _L_ee_ref = _L_ee_ref * pin.SE3(np.eye(3), np.array([0.0, 0.0, 0.1]))
             self.reduced_robot.model.addFrame(
                 pin.Frame('L_ee',
                           self.reduced_robot.model.getJointId('idx27_arm_l_joint7'),
-                          pin.SE3(np.eye(3),
-                                  np.array([0.09,0,0.018]).T),
+                        #   _L_ee_ref,
+                          pin.SE3(np.eye(3), np.array([0.2, -0.05, 0.0])),
                           pin.FrameType.OP_FRAME)
             )
             self.reduced_robot.model.addFrame(
                 pin.Frame('R_ee',
                           self.reduced_robot.model.getJointId('idx67_arm_r_joint7'),
-                          pin.SE3(np.eye(3),
-                                  np.array([0.09,0,0.018]).T),
+                        #   _R_ee_ref,
+                          pin.SE3(np.eye(3), np.array([0.2, 0.05, 0.0])),
                           pin.FrameType.OP_FRAME)
             )
             # Save cache (only after everything is built)
@@ -2307,7 +2315,7 @@ if __name__ == "__main__":
     # initial positon
     L_tf_target = pin.SE3(
         pin.Quaternion(1, 0, 0, 0),
-        np.array([0.25, +0.25, 1.2]),
+        np.array([0.25, +0.25, 1.0]),
     )
 
     R_tf_target = pin.SE3(
