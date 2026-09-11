@@ -111,10 +111,13 @@ class G2_ArmController:
         self.tauff_target = np.zeros(G2_Num_Arm_Motors)
         self.motion_mode = motion_mode          # G2 无 motion/debug 之分，保留形参兼容主程序
         self.simulation_mode = simulation_mode
-        # 臂增益（可后续调；肩/肘硬一点，腕软一点）
-        self.kp_shoulder = 300.0; self.kd_shoulder = 3.0
-        self.kp_elbow    = 300.0; self.kd_elbow    = 3.0
-        self.kp_wrist    = 40.0;  self.kd_wrist    = 1.5
+        # 臂增益（肩/肘硬一点，腕软一点）。kd 是阻尼：太小会欠阻尼→到位后来回抖/晃。
+        # kd 从 3.0/1.5 提到 15.0/5.0（≈5x）以抑制振荡。注意：IsaacSim 侧走 PhysX 隐式 PD，
+        # 实际增益取自 sim 仓 robots/agibot.py 的 ImplicitActuatorCfg（_on_arm 只读 .q，忽略这里的 kp/kd）；
+        # 这里的值仅为与 agibot.py 保持一致 + 将来上真机时用。
+        self.kp_shoulder = 300.0; self.kd_shoulder = 15.0
+        self.kp_elbow    = 300.0; self.kd_elbow    = 15.0
+        self.kp_wrist    = 40.0;  self.kd_wrist    = 5.0
         self.control_dt  = 1.0 / 250.0
 
         # 无真机：固定走 debug 话题 rt/lowcmd（与 sim 侧订阅一致）

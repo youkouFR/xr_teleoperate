@@ -30,6 +30,17 @@ def publish_reset_category(category: int, publisher): # Scene Reset signal
     publisher.Write(msg)
     logger_mp.info(f"published reset category: {category}")
 
+# G2 arm IK frame-origin correction, [x, y, z] meters in the robot base frame.
+# tv_wrapper emits wrist targets calibrated for Unitree G1, whose arm IK root frame is the
+# pelvis (the "WAIST" origin, see tv_wrapper.transform_..._head_then_waist). G2's arm IK root
+# frame is instead the chassis/ground (z=0). Comparing each robot's arm-chain root (shoulder):
+#   G2 arm_l/r_joint1 = [0.102, +-0.069, 1.341]   G1 l/r_shoulder_pitch = [0, +-0.1, 0.292]
+#   offset = shoulder_G2 - shoulder_G1 ~= [0.102, 0, 1.049]  (the +-0.031 y term is negligible)
+# Adding it moves the wrist target from G1's waist frame into G2's ground frame, preserving the
+# wrist-to-shoulder geometry. Without it every target lands ~1.05 m too low, so the G2 arms are
+# always driven to their lowest reachable pose and cannot be lifted to chest height.
+G2_WRIST_TARGET_OFFSET = (0.102, 0.0, 1.049)
+
 # state transition
 START          = False  # Enable to start robot following VR user motion
 STOP           = False  # Enable to begin system exit procedure
@@ -375,9 +386,19 @@ if __name__ == '__main__':
             current_lr_arm_q  = arm_ctrl.get_current_dual_arm_q()
             current_lr_arm_dq = arm_ctrl.get_current_dual_arm_dq()
 
+            # wrist IK targets. G2's IK root frame is the chassis/ground while tv_wrapper is
+            # calibrated for G1 (root=pelvis/waist), so shift the targets into G2's frame.
+            # copy() first: tele_data poses must stay untouched for recording / other consumers.
+            left_wrist_target, right_wrist_target = tele_data.left_wrist_pose, tele_data.right_wrist_pose
+            if args.arm == "G2":
+                left_wrist_target  = left_wrist_target.copy()
+                right_wrist_target = right_wrist_target.copy()
+                left_wrist_target[:3, 3]  += G2_WRIST_TARGET_OFFSET
+                right_wrist_target[:3, 3] += G2_WRIST_TARGET_OFFSET
+
             # solve ik using motor data and wrist pose, then use ik results to control arms.
             time_ik_start = time.time()
-            sol_q, sol_tauff  = arm_ik.solve_ik(tele_data.left_wrist_pose, tele_data.right_wrist_pose, current_lr_arm_q, current_lr_arm_dq)
+            sol_q, sol_tauff  = arm_ik.solve_ik(left_wrist_target, right_wrist_target, current_lr_arm_q, current_lr_arm_dq)
             time_ik_end = time.time()
             logger_mp.debug(f"ik:\t{round(time_ik_end - time_ik_start, 6)}")
             arm_ctrl.ctrl_dual_arm(sol_q, sol_tauff)
