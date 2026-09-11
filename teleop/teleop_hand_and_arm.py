@@ -14,8 +14,8 @@ sys.path.append(parent_dir)
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize # dds 
 from televuer import TeleVuerWrapper
-from teleop.robot_control.robot_arm import G1_29_ArmController, G1_29_Arm_Internal_Dex1_Controller, G1_23_ArmController, H1_2_ArmController, H1_ArmController, H2_ArmController, R1_A5_ArmController, R1_A7_ArmController
-from teleop.robot_control.robot_arm_ik import G1_29_ArmIK, G1_23_ArmIK, H1_2_ArmIK, H1_ArmIK, H2_ArmIK, R1_A5_ArmIK, R1_A7_ArmIK
+from teleop.robot_control.robot_arm import G1_29_ArmController, G1_29_Arm_Internal_Dex1_Controller, G1_23_ArmController, H1_2_ArmController, H1_ArmController, H2_ArmController, R1_A5_ArmController, R1_A7_ArmController, G2_ArmController
+from teleop.robot_control.robot_arm_ik import G1_29_ArmIK, G1_23_ArmIK, H1_2_ArmIK, H1_ArmIK, H2_ArmIK, R1_A5_ArmIK, R1_A7_ArmIK, G2_ArmIK
 from teleimager.image_client import ImageClient
 from teleop.utils.episode_writer import EpisodeWriter
 from teleop.utils.ipc import IPC_Server
@@ -76,8 +76,8 @@ if __name__ == '__main__':
     parser.add_argument('--frequency', type = float, default = 30.0, help = 'control and record \'s frequency')
     parser.add_argument('--input-mode', type=str, choices=['hand', 'controller'], default='hand', help='Select XR device input tracking source')
     parser.add_argument('--display-mode', type=str, choices=['immersive', 'ego', 'pass-through'], default='immersive', help='Select XR device display mode')
-    parser.add_argument('--arm', type=str, choices=['G1_29', 'G1_23', 'H1_2', 'H1', 'H2', 'R1_A5', 'R1_A7'], default='G1_29', help='Select arm controller')
-    parser.add_argument('--ee', type=str, choices=['dex1', 'dex1_internal', 'dex3', 'inspire_ftp', 'inspire_dfx', 'brainco'], help='Select end effector controller')
+    parser.add_argument('--arm', type=str, choices=['G1_29', 'G1_23', 'H1_2', 'H1', 'H2', 'R1_A5', 'R1_A7', 'G2'], default='G1_29', help='Select arm controller')
+    parser.add_argument('--ee', type=str, choices=['dex1', 'dex1_internal', 'dex3', 'inspire_ftp', 'inspire_dfx', 'brainco', 'o10'], help='Select end effector controller')
     # network parameters
     parser.add_argument('--img-server-ip', type=str, default='192.168.123.164', help='IP address of image server, used by teleimager and televuer')
     parser.add_argument('--network-interface', type=str, default=None, help='Network interface for dds communication, e.g., eth0, wlan0. If None, use default interface.')
@@ -184,6 +184,9 @@ if __name__ == '__main__':
         elif args.arm == "R1_A7":
             arm_ik = R1_A7_ArmIK()
             arm_ctrl = R1_A7_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
+        elif args.arm == "G2":
+            arm_ik = G2_ArmIK()
+            arm_ctrl = G2_ArmController(motion_mode=args.motion, simulation_mode=args.sim)
 
         # end-effector
         if args.ee in ("dex3", "inspire_ftp", "inspire_dfx") and args.input_mode == "controller":
@@ -242,6 +245,16 @@ if __name__ == '__main__':
             dual_hand_action_array = Array('d', 12, lock = False)  # [output] current left, right hand action(12) data.
             hand_ctrl = Brainco_Controller_ctrl(left_gripper_trigger_in, left_gripper_squeeze_in, right_gripper_trigger_in, right_gripper_squeeze_in,
                                                 dual_hand_data_lock, dual_hand_state_array, dual_hand_action_array, simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
+        elif args.ee == "o10":
+            from teleop.robot_control.robot_hand_o10 import O10_Controller
+            left_hand_pos_array  = Array('d', 75, lock=True)     # [input] 手骨架
+            right_hand_pos_array = Array('d', 75, lock=True)     # [input]
+            dual_hand_data_lock = Lock()
+            dual_hand_state_array  = Array('d', 20, lock=False)  # [output] 左10+右10
+            dual_hand_action_array = Array('d', 20, lock=False)  # [output] 左10+右10
+            hand_ctrl = O10_Controller(left_hand_pos_array, right_hand_pos_array, dual_hand_data_lock,
+                                       dual_hand_state_array, dual_hand_action_array,
+                                       simulation_mode=args.sim, xr_motion_data_ready_in=xr_motion_data_ready)
         else:
             pass
         
@@ -315,7 +328,7 @@ if __name__ == '__main__':
 
             # get xr's tele data
             tele_data = tv_wrapper.get_tele_data()
-            if args.ee in ("dex3", "inspire_ftp", "inspire_dfx", "brainco")  and args.input_mode == "hand":
+            if args.ee in ("dex3", "inspire_ftp", "inspire_dfx", "brainco", "o10")  and args.input_mode == "hand":
                 with left_hand_pos_array.get_lock():
                     left_hand_pos_array[:] = tele_data.left_hand_pos.flatten()
                 with right_hand_pos_array.get_lock():

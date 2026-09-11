@@ -28,6 +28,31 @@ H2_Num_Motors = 35
 R1_A5_Num_Motors = 35
 R1_A7_Num_Motors = 35
  
+# ===== AgiBot G2 (双臂 14 DoF, 无真机 / 纯仿真) =====
+G2_Num_Arm_Motors = 14          # 仅双臂参与遥操作
+G2_Num_Motors     = 35          # 复用 unitree_hg LowCmd_/LowState_ 的 array[35]
+
+class G2_LowState:
+    def __init__(self):
+        self.motor_state = [MotorState() for _ in range(G2_Num_Motors)]
+
+class G2_JointArmIndex(IntEnum):
+    # 左臂 → motor_cmd[0..6]
+    kLeftArmJoint1 = 0
+    kLeftArmJoint2 = 1
+    kLeftArmJoint3 = 2
+    kLeftArmJoint4 = 3
+    kLeftArmJoint5 = 4
+    kLeftArmJoint6 = 5
+    kLeftArmJoint7 = 6
+    # 右臂 → motor_cmd[7..13]
+    kRightArmJoint1 = 7
+    kRightArmJoint2 = 8
+    kRightArmJoint3 = 9
+    kRightArmJoint4 = 10
+    kRightArmJoint5 = 11
+    kRightArmJoint6 = 12
+    kRightArmJoint7 = 13
 
 class MotorState:
     def __init__(self):
@@ -75,6 +100,121 @@ class DataBuffer:
     def SetData(self, data):
         with self.lock:
             self.data = data
+
+class G2_ArmController:
+    """AgiBot G2 双臂控制器（无真机 / 纯仿真）。
+    对照 G1_29_ArmController 改写：发布 rt/lowcmd，订阅 rt/lowstate，
+    仅驱动双臂 14 关节（motor_cmd[0..13]）。"""
+    def __init__(self, motion_mode=False, simulation_mode=False):
+        logger_mp.info("Initialize G2_ArmController...")
+        self.q_target = np.zeros(G2_Num_Arm_Motors)
+        self.tauff_target = np.zeros(G2_Num_Arm_Motors)
+        self.motion_mode = motion_mode          # G2 无 motion/debug 之分，保留形参兼容主程序
+        self.simulation_mode = simulation_mode
+        # 臂增益（可后续调；肩/肘硬一点，腕软一点）
+        self.kp_shoulder = 300.0; self.kd_shoulder = 3.0
+        self.kp_elbow    = 300.0; self.kd_elbow    = 3.0
+        self.kp_wrist    = 40.0;  self.kd_wrist    = 1.5
+        self.control_dt  = 1.0 / 250.0
+
+        # 无真机：固定走 debug 话题 rt/lowcmd（与 sim 侧订阅一致）
+        self.lowcmd_publisher = ChannelPublisher(kTopicLowCommand_Debug, hg_LowCmd)
+        self.lowcmd_publisher.Init()
+        self.lowstate_subscriber = ChannelSubscriber(kTopicLowState, hg_LowState)
+        self.lowstate_subscriber.Init()
+        self.lowstate_buffer = DataBuffer()
+        self.mode_machine = None
+        self.lowstate_sub_ready = False
+
+        self.subscribe_thread = threading.Thread(target=self._subscribe_motor_state)
+        self.subscribe_thread.daemon = True
+        self.subscribe_thread.start()
+        wait_for_dds(lambda: self.lowstate_sub_ready, "G2_ArmController")
+
+        # 初始化 lowcmd 报文：仅双臂 14 槽上电（mode=1）+ 增益
+        self.crc = CRC()
+        self.msg = unitree_hg_msg_dds__LowCmd_()
+        self.msg.mode_pr = 0
+        self.msg.mode_machine = self.get_mode_machine()
+        self.all_motor_q = self.get_current_motor_q()
+        for id in G2_JointArmIndex:
+            self.msg.motor_cmd[id].mode = 1
+            if id.value in (5, 6, 12, 13):      # 腕关节（joint6/joint7）用软增益
+                self.msg.motor_cmd[id].kp = self.kp_wrist
+                self.msg.motor_cmd[id].kd = self.kd_wrist
+            else:
+                self.msg.motor_cmd[id].kp = self.kp_shoulder
+                self.msg.motor_cmd[id].kd = self.kd_shoulder
+            self.msg.motor_cmd[id].q = self.all_motor_q[id]
+        logger_mp.info("G2 arms initialized (motor_cmd[0..13]).")
+
+        self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
+        self.ctrl_lock = threading.Lock()
+        self.publish_thread.daemon = True
+        self.publish_thread.start()
+        logger_mp.info("Initialize G2_ArmController OK!")
+
+    def _subscribe_motor_state(self):
+        while True:
+            msg = self.lowstate_subscriber.Read()
+            if msg is not None:
+                lowstate = G2_LowState()
+                for id in range(G2_Num_Motors):
+                    lowstate.motor_state[id].q  = msg.motor_state[id].q
+                    lowstate.motor_state[id].dq = msg.motor_state[id].dq
+                self.lowstate_buffer.SetData(lowstate)
+                self.mode_machine = msg.mode_machine
+                self.lowstate_sub_ready = True
+            time.sleep(0.002)
+
+    def _ctrl_motor_state(self):
+        while True:
+            start_time = time.time()
+            with self.ctrl_lock:
+                arm_q_target     = self.q_target
+                arm_tauff_target = self.tauff_target
+            # 纯仿真：直接下发（不做真机限速裁剪）
+            cliped_arm_q_target = arm_q_target
+            for idx, id in enumerate(G2_JointArmIndex):
+                self.msg.motor_cmd[id].q   = cliped_arm_q_target[idx]
+                self.msg.motor_cmd[id].dq  = 0
+                self.msg.motor_cmd[id].tau = arm_tauff_target[idx]
+            self.msg.crc = self.crc.Crc(self.msg)
+            self.lowcmd_publisher.Write(self.msg)
+            time.sleep(max(0, self.control_dt - (time.time() - start_time)))
+
+    def ctrl_dual_arm(self, q_target, tauff_target):
+        '''设置双臂 14 关节的目标 q 与 tauff。'''
+        with self.ctrl_lock:
+            self.q_target = q_target
+            self.tauff_target = tauff_target
+
+    def get_mode_machine(self):
+        if self.mode_machine is None:
+            raise RuntimeError("G2 low state is not ready.")
+        return self.mode_machine
+
+    def get_current_motor_q(self):
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].q for id in range(G2_Num_Motors)])
+
+    def get_current_dual_arm_q(self):
+        '''返回双臂当前 q（14）。'''
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].q for id in G2_JointArmIndex])
+
+    def get_current_dual_arm_dq(self):
+        '''返回双臂当前 dq（14）。'''
+        return np.array([self.lowstate_buffer.GetData().motor_state[id].dq for id in G2_JointArmIndex])
+
+    def ctrl_dual_arm_go_home(self):
+        '''双臂回零（q_target=0）。'''
+        logger_mp.info("[G2_ArmController] ctrl_dual_arm_go_home start...")
+        with self.ctrl_lock:
+            self.q_target = np.zeros(G2_Num_Arm_Motors)
+        for _ in range(100):
+            if np.all(np.abs(self.get_current_dual_arm_q()) < 0.05):
+                logger_mp.info("[G2_ArmController] both arms reached home.")
+                break
+            time.sleep(0.02)
 
 class G1_29_ArmController:
     def __init__(self, motion_mode = False, simulation_mode = False):

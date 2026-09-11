@@ -385,6 +385,10 @@ python ./robot_control/test_o10_retarget.py
 2. `left_retargeting_joint_names` 打印出实际返回顺序（**据此核对 Step 3.3③ 的 index 映射是否成立**；若 `retarget()` 返回含 mimic 的 16 维，则 `.index(name)` 仍能对上主动关节名，映射有效）。
 3. `open=True` 与 `open=False` 两组 → `q` 数值明显不同、方向合理（握拳时弯曲关节角增大）。
 
+> **⚠️ 帧约定（本合成测试测不出来、但实机必需）**：上面的合成 landmark 把手指放在 **+x** 方向，只是为了跑通链路；**它并不验证帧约定**。真实 Quest3/dex-retargeting 的人手骨架约定是手指指向 **-Y**（与仓库内能正常工作的 `inspire`/`dex3` 一致），而 **O10 URDF 四指在 q=0 时指向 +Z**。两者差一个固定旋转，若不修正，`retarget` 会把 `pip` 顶到上限→**手恒定握拳、不跟随张/合**。
+> 修正位置在 Block4 的 `O10_Controller.control_process`：对 `ref_left/right_value` 右乘 `_HUMAN_TO_O10_ROT = [[-1,0,0],[0,0,-1],[0,-1,0]]`（把 -Y 旋进 +Z，左右手通用）。详见 `Phase2_Block2_4_5_G2_IsaacSim_Integration.md` Step 4。
+> **如何自查**：比较各手 URDF 在 q=0 时 `wrist→middle_tip` 的方向——O10=`[0,0,1]`、inspire/dex3=`[0,-1,0]`；不一致就需要旋转。
+
 > 合成 landmark 只为跑通链路；**更真实的验证**：接上 Quest3（Phase 1 已通）跑 `teleop_hand_and_arm.py`（Block4 接入后），或用 Phase 1 录一段 `tele_data.left_hand_pos` 回放喂给本脚本。
 
 ## Step 3.5（可选）Meshcat 可视化 O10 手指
